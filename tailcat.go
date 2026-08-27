@@ -1381,6 +1381,13 @@ func newNetstack(logf logger.Logf, sys *tsd.System) (*netstack.Impl, error) {
 	)
 }
 
+// disableNetNSOnce ensures we only call netns.SetEnabled(false) once for
+// the process. tailcat uses userspace networking and does not want
+// Tailscale-created sockets bound in a separate network namespace.
+// Calling it on every engine creation would be an observable global side
+// effect for library callers that create multiple Server/Client instances.
+var disableNetNSOnce sync.Once
+
 // createEngine creates the wgengine.Engine with userspace networking.
 func createEngine(logf logger.Logf, lb *locoBackend) (err error) {
 	sys := &lb.sys
@@ -1405,7 +1412,7 @@ func createEngine(logf logger.Logf, lb *locoBackend) (err error) {
 	// call-me-maybe messages that advertise our UDP endpoints (see
 	// locoBackend.advertiseEndpoints).
 	conf.ForceDiscoKey = nodePrivateAsDiscoPrivate(lb.priv)
-	netns.SetEnabled(false)
+	disableNetNSOnce.Do(func() { netns.SetEnabled(false) })
 	e, err := wgengine.NewUserspaceEngine(logf, conf)
 	if err != nil {
 		logf("wgengine.NewUserspaceEngine(tun %q) error: %v", "userspace-networking", err)
