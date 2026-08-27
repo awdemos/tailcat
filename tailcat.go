@@ -297,6 +297,8 @@ type Server struct {
 
 	lb *locoBackend // non-nil once Start has been called
 
+	closeOnce sync.Once
+
 	// AllowProxy, if non-nil, reports whether
 	// a TCP or UDP proxy is allowed for that target.
 	AllowProxy func(netip.AddrPort) bool
@@ -519,7 +521,11 @@ func (s *Server) Close() error {
 	if s.lb == nil {
 		return nil // never started
 	}
-	return s.lb.Close()
+	var err error
+	s.closeOnce.Do(func() {
+		err = s.lb.Close()
+	})
+	return err
 }
 
 // DrainTCP waits until every TCP connection in the server's netstack
@@ -1411,6 +1417,8 @@ type Client struct {
 	key     key.NodePrivate // the effective node identity; Key or generated
 	started bool
 
+	closeOnce sync.Once
+
 	upDone atomic.Bool // whether the server has meowed us at least once
 }
 
@@ -1552,7 +1560,11 @@ func (c *Client) Close() error {
 	if c.lb == nil {
 		return nil // never used
 	}
-	return c.lb.Close()
+	var err error
+	c.closeOnce.Do(func() {
+		err = c.lb.Close()
+	})
+	return err
 }
 
 // PingResult is the result of a successful [Client.Ping] call.

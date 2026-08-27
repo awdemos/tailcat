@@ -381,3 +381,37 @@ func TestFetchDERPMapMemoryCache(t *testing.T) {
 		t.Errorf("fetches = %d; want 1", n)
 	}
 }
+
+// TestDoubleClose verifies that calling Close more than once on a
+// [Server] or [Client] is harmless and does not panic or error.
+func TestDoubleClose(t *testing.T) {
+	t.Parallel()
+
+	dm := integration.RunDERPAndSTUN(t, mkLogger(t, "derpstun"), "127.0.0.1")
+	reg := dm.Regions[1]
+	if reg == nil {
+		t.Fatal("no region 1 in derpmap")
+	}
+
+	s := &Server{Logf: mkLogger(t, "server"), Region: reg}
+	if err := s.Start(); err != nil {
+		t.Fatalf("server Start: %v", err)
+	}
+
+	c := &Client{Server: s.ConnBlob(), Logf: mkLogger(t, "client")}
+	PingForTest(t, s, c)
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("first client Close: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("second client Close: %v", err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("first server Close: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("second server Close: %v", err)
+	}
+}
