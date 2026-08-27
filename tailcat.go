@@ -341,7 +341,7 @@ type Server struct {
 // first picking defaults for any unset configuration fields: a new
 // ephemeral key, log.Printf for logging, and the nearest region of
 // the default DERP map.
-func (s *Server) Start() error {
+func (s *Server) Start() (err error) {
 	if s.lb != nil {
 		return errors.New("tailcat: Server.Start called twice")
 	}
@@ -392,6 +392,11 @@ func (s *Server) Start() error {
 		return fmt.Errorf("netmon.New: %w", err)
 	}
 	sys.Set(netMon)
+	defer func() {
+		if err != nil {
+			netMon.Close()
+		}
+	}()
 
 	dialer := &tsdial.Dialer{Logf: logf} // mutated below (before used)
 	sys.Set(dialer)
@@ -425,10 +430,23 @@ func (s *Server) Start() error {
 	if err := createEngine(logf, lb); err != nil {
 		return fmt.Errorf("createEngine: %w", err)
 	}
+	defer func() {
+		if err != nil {
+			if e, ok := sys.Engine.GetOK(); ok {
+				e.Close()
+			}
+		}
+	}()
+
 	ns, err := newNetstack(logf, sys)
 	if err != nil {
 		return fmt.Errorf("newNetstack: %w", err)
 	}
+	defer func() {
+		if err != nil {
+			ns.Close()
+		}
+	}()
 	ns.ProcessLocalIPs = true
 	ns.ProcessSubnets = true
 	ns.GetTCPHandlerForFlow = func(src, dst netip.AddrPort) (handler func(net.Conn), intercept bool) {
@@ -466,8 +484,16 @@ func (s *Server) Start() error {
 	sys.Tun.Get().Start()
 
 	s.lb = lb
+	defer func() {
+		if err != nil {
+			s.lb = nil
+		}
+	}()
 	sys.Engine.Get().SetFilter(s.buildFilter())
-	return lb.Start()
+	if err := lb.Start(); err != nil {
+		return fmt.Errorf("lb.Start: %w", err)
+	}
+	return nil
 }
 
 var allTCPPorts = filter.PortRange{First: 0, Last: 65535}
@@ -1440,7 +1466,7 @@ func NewClient(server ConnBlob) *Client {
 // netstack) on first use, with defaults for unset config fields. It
 // does no network access; that happens in ensureStarted, its caller.
 // c.startMu must be held.
-func (c *Client) initLocked() error {
+func (c *Client) initLocked() (err error) {
 	if c.lb != nil {
 		return nil
 	}
@@ -1470,6 +1496,11 @@ func (c *Client) initLocked() error {
 		return fmt.Errorf("netmon.New: %w", err)
 	}
 	sys.Set(netMon)
+	defer func() {
+		if err != nil {
+			netMon.Close()
+		}
+	}()
 
 	dialer := &tsdial.Dialer{Logf: logf} // mutated below (before used)
 	sys.Set(dialer)
@@ -1498,10 +1529,23 @@ func (c *Client) initLocked() error {
 	if err := createEngine(logf, lb); err != nil {
 		return fmt.Errorf("createEngine: %w", err)
 	}
+	defer func() {
+		if err != nil {
+			if e, ok := sys.Engine.GetOK(); ok {
+				e.Close()
+			}
+		}
+	}()
+
 	ns, err := newNetstack(logf, sys)
 	if err != nil {
 		return fmt.Errorf("newNetstack: %w", err)
 	}
+	defer func() {
+		if err != nil {
+			ns.Close()
+		}
+	}()
 	ns.ProcessLocalIPs = true // required to even reply to TCP SYNs client sends out
 	ns.GetTCPHandlerForFlow = func(src, dst netip.AddrPort) (handler func(net.Conn), intercept bool) {
 		return nil, true // don't accept any incoming connections to client
@@ -1594,6 +1638,10 @@ func (c *Client) ensureStarted(ctx context.Context) error {
 		mak.Set(&c.lb.dm.Regions, r.RegionID, r)
 	}
 	if err := c.lb.Start(); err != nil {
+		// Start failed; discard the partially-initialized backend so the
+		// next call retries from scratch rather than reusing a broken one.
+		c.lb.Close()
+		c.lb = nil
 		return err
 	}
 	c.started = true
