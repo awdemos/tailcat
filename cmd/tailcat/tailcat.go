@@ -150,6 +150,10 @@ List or delete saved keys:
 	tailcat genkey --list
 	tailcat genkey --delete --key=<name>
 
+Generate SBOMs for the project using syft and write Go build info:
+
+	tailcat sbom [target] [outdir]
+
 Print the full documentation (the project README) with more examples:
 
 	tailcat --readme
@@ -212,6 +216,8 @@ func main() {
 		genKey()
 	case "printpub":
 		fmt.Println(clientKey().Public().String())
+	case "sbom":
+		runSBOM()
 	default:
 		var dst string
 		if len(args) == 2 {
