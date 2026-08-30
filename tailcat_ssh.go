@@ -84,12 +84,19 @@ func sessionHandler(sess ssh.Session) {
 	}
 
 	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Dir = u.HomeDir
+
+	// Honor the process HOME so tests can use a clean, hermetic home directory
+	// that won't source user login files (e.g. .bashrc that auto-attaches tmux).
+	homeDir := u.HomeDir
+	if v := os.Getenv("HOME"); v != "" {
+		homeDir = v
+	}
+	cmd.Dir = homeDir
 
 	cmd.Env = []string{
 		"SHELL=" + shell,
 		"USER=" + u.Username,
-		"HOME=" + u.HomeDir,
+		"HOME=" + homeDir,
 		"PATH=" + defaultPath(u),
 	}
 	for _, env := range sess.Environ() {

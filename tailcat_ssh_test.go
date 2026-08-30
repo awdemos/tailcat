@@ -10,6 +10,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,22 @@ func setupSSHEnv(t *testing.T) *testSSHEnv {
 	// Hermetic localhost DERP+STUN server.
 	derpMap := integration.RunDERPAndSTUN(t, logger.Discard, "127.0.0.1")
 	region := derpMap.Regions[1]
+
+	// Run the embedded SSH server with a clean HOME so that the login shell
+	// started in the PTY doesn't source the real user's dotfiles (e.g. a
+	// .bashrc that auto-attaches tmux and ignores "exit").
+	origHome := os.Getenv("HOME")
+	tmpHome := t.TempDir()
+	if err := os.Setenv("HOME", tmpHome); err != nil {
+		t.Fatalf("Setenv HOME: %v", err)
+	}
+	t.Cleanup(func() {
+		if origHome == "" {
+			os.Unsetenv("HOME")
+		} else {
+			os.Setenv("HOME", origHome)
+		}
+	})
 
 	logf := logger.Discard
 	if testing.Verbose() {
@@ -213,11 +230,6 @@ func TestSSHSuite(t *testing.T) {
 	})
 
 	t.Run("InteractiveShell", func(t *testing.T) {
-		// PR #8 partially fixed the PTY hang, but this subtest still
-		// blocks on current main; skip until the lifecycle is fully
-		// addressed upstream.
-		t.Skip("pre-existing PTY hang on current main")
-
 		sess, err := env.sshClient(t).NewSession()
 		if err != nil {
 			t.Fatal(err)
