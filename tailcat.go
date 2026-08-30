@@ -128,6 +128,11 @@ const derpMapCacheMaxAge = time.Hour
 // hint header to the DERP map server.
 var ExpandForServer expandForServer
 
+// startBackendHook is used by tests to simulate a backend startup
+// failure after Server.Start has allocated resources but before it
+// calls lb.Start. It is always nil in production.
+var startBackendHook func(*locoBackend) error
+
 type expandForServer struct{}
 
 // ConnBlob is a compact, URL-safe string that a server gives to clients so
@@ -297,6 +302,8 @@ type Server struct {
 
 	lb *locoBackend // non-nil once Start has been called
 
+	closeOnce sync.Once
+
 	// AllowProxy, if non-nil, reports whether
 	// a TCP or UDP proxy is allowed for that target.
 	AllowProxy func(netip.AddrPort) bool
@@ -341,7 +348,7 @@ type Server struct {
 // first picking defaults for any unset configuration fields: a new
 // ephemeral key, log.Printf for logging, and the nearest region of
 // the default DERP map.
-func (s *Server) Start() error {
+func (s *Server) Start() (err error) {
 	if s.lb != nil {
 		return errors.New("tailcat: Server.Start called twice")
 	}
@@ -392,6 +399,11 @@ func (s *Server) Start() error {
 		return fmt.Errorf("netmon.New: %w", err)
 	}
 	sys.Set(netMon)
+	defer func() {
+		if err != nil {
+			netMon.Close()
+		}
+	}()
 
 	dialer := &tsdial.Dialer{Logf: logf} // mutated below (before used)
 	sys.Set(dialer)
@@ -425,10 +437,23 @@ func (s *Server) Start() error {
 	if err := createEngine(logf, lb); err != nil {
 		return fmt.Errorf("createEngine: %w", err)
 	}
+	defer func() {
+		if err != nil {
+			if e, ok := sys.Engine.GetOK(); ok {
+				e.Close()
+			}
+		}
+	}()
+
 	ns, err := newNetstack(logf, sys)
 	if err != nil {
 		return fmt.Errorf("newNetstack: %w", err)
 	}
+	defer func() {
+		if err != nil {
+			ns.Close()
+		}
+	}()
 	ns.ProcessLocalIPs = true
 	ns.ProcessSubnets = true
 	ns.GetTCPHandlerForFlow = func(src, dst netip.AddrPort) (handler func(net.Conn), intercept bool) {
@@ -465,9 +490,27 @@ func (s *Server) Start() error {
 
 	sys.Tun.Get().Start()
 
+	// Test hook: simulate a backend startup failure after resources are
+	// allocated but before lb.Start runs.
+	if startBackendHook != nil {
+		if hookErr := startBackendHook(lb); hookErr != nil {
+			err = hookErr
+			s.lb = nil
+			return fmt.Errorf("startBackendHook: %w", err)
+		}
+	}
+
 	s.lb = lb
+	defer func() {
+		if err != nil {
+			s.lb = nil
+		}
+	}()
 	sys.Engine.Get().SetFilter(s.buildFilter())
-	return lb.Start()
+	if err := lb.Start(); err != nil {
+		return fmt.Errorf("lb.Start: %w", err)
+	}
+	return nil
 }
 
 var allTCPPorts = filter.PortRange{First: 0, Last: 65535}
@@ -519,7 +562,11 @@ func (s *Server) Close() error {
 	if s.lb == nil {
 		return nil // never started
 	}
-	return s.lb.Close()
+	var err error
+	s.closeOnce.Do(func() {
+		err = s.lb.Close()
+	})
+	return err
 }
 
 // DrainTCP waits until every TCP connection in the server's netstack
@@ -1334,6 +1381,13 @@ func newNetstack(logf logger.Logf, sys *tsd.System) (*netstack.Impl, error) {
 	)
 }
 
+// disableNetNSOnce ensures we only call netns.SetEnabled(false) once for
+// the process. tailcat uses userspace networking and does not want
+// Tailscale-created sockets bound in a separate network namespace.
+// Calling it on every engine creation would be an observable global side
+// effect for library callers that create multiple Server/Client instances.
+var disableNetNSOnce sync.Once
+
 // createEngine creates the wgengine.Engine with userspace networking.
 func createEngine(logf logger.Logf, lb *locoBackend) (err error) {
 	sys := &lb.sys
@@ -1358,7 +1412,7 @@ func createEngine(logf logger.Logf, lb *locoBackend) (err error) {
 	// call-me-maybe messages that advertise our UDP endpoints (see
 	// locoBackend.advertiseEndpoints).
 	conf.ForceDiscoKey = nodePrivateAsDiscoPrivate(lb.priv)
-	netns.SetEnabled(false)
+	disableNetNSOnce.Do(func() { netns.SetEnabled(false) })
 	e, err := wgengine.NewUserspaceEngine(logf, conf)
 	if err != nil {
 		logf("wgengine.NewUserspaceEngine(tun %q) error: %v", "userspace-networking", err)
@@ -1411,6 +1465,8 @@ type Client struct {
 	key     key.NodePrivate // the effective node identity; Key or generated
 	started bool
 
+	closeOnce sync.Once
+
 	upDone atomic.Bool // whether the server has meowed us at least once
 }
 
@@ -1440,7 +1496,7 @@ func NewClient(server ConnBlob) *Client {
 // netstack) on first use, with defaults for unset config fields. It
 // does no network access; that happens in ensureStarted, its caller.
 // c.startMu must be held.
-func (c *Client) initLocked() error {
+func (c *Client) initLocked() (err error) {
 	if c.lb != nil {
 		return nil
 	}
@@ -1470,6 +1526,11 @@ func (c *Client) initLocked() error {
 		return fmt.Errorf("netmon.New: %w", err)
 	}
 	sys.Set(netMon)
+	defer func() {
+		if err != nil {
+			netMon.Close()
+		}
+	}()
 
 	dialer := &tsdial.Dialer{Logf: logf} // mutated below (before used)
 	sys.Set(dialer)
@@ -1498,10 +1559,23 @@ func (c *Client) initLocked() error {
 	if err := createEngine(logf, lb); err != nil {
 		return fmt.Errorf("createEngine: %w", err)
 	}
+	defer func() {
+		if err != nil {
+			if e, ok := sys.Engine.GetOK(); ok {
+				e.Close()
+			}
+		}
+	}()
+
 	ns, err := newNetstack(logf, sys)
 	if err != nil {
 		return fmt.Errorf("newNetstack: %w", err)
 	}
+	defer func() {
+		if err != nil {
+			ns.Close()
+		}
+	}()
 	ns.ProcessLocalIPs = true // required to even reply to TCP SYNs client sends out
 	ns.GetTCPHandlerForFlow = func(src, dst netip.AddrPort) (handler func(net.Conn), intercept bool) {
 		return nil, true // don't accept any incoming connections to client
@@ -1552,7 +1626,11 @@ func (c *Client) Close() error {
 	if c.lb == nil {
 		return nil // never used
 	}
-	return c.lb.Close()
+	var err error
+	c.closeOnce.Do(func() {
+		err = c.lb.Close()
+	})
+	return err
 }
 
 // PingResult is the result of a successful [Client.Ping] call.
@@ -1594,6 +1672,10 @@ func (c *Client) ensureStarted(ctx context.Context) error {
 		mak.Set(&c.lb.dm.Regions, r.RegionID, r)
 	}
 	if err := c.lb.Start(); err != nil {
+		// Start failed; discard the partially-initialized backend so the
+		// next call retries from scratch rather than reusing a broken one.
+		c.lb.Close()
+		c.lb = nil
 		return err
 	}
 	c.started = true

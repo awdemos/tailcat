@@ -44,3 +44,9 @@ func PingForTest(t testing.TB, s *Server, c *Client) PingResult {
 	}
 	return res
 }
+
+// SetStartBackendHookForTest sets the hook used by Server.Start to simulate
+// backend startup failures. Pass nil to disable.
+func SetStartBackendHookForTest(h func(*locoBackend) error) {
+	startBackendHook = h
+}

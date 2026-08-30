@@ -381,3 +381,65 @@ func TestFetchDERPMapMemoryCache(t *testing.T) {
 		t.Errorf("fetches = %d; want 1", n)
 	}
 }
+
+// TestServerStartCleansUpOnFailure verifies that Server.Start releases
+// netMon, the WireGuard engine, and netstack if lb.Start fails, and
+// that a second Start can recover from a clean state.
+func TestServerStartCleansUpOnFailure(t *testing.T) {
+	var fail atomic.Bool
+	fail.Store(true)
+	SetStartBackendHookForTest(func(lb *locoBackend) error {
+		if fail.Swap(false) {
+			return errors.New("injected start failure")
+		}
+		return nil
+	})
+	defer SetStartBackendHookForTest(nil)
+
+	s := &Server{Logf: logger.Discard}
+	if err := s.Start(); err == nil {
+		t.Fatalf("first Start succeeded, want injected failure")
+	}
+	if err := s.Start(); err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+	defer s.Close()
+
+	if s.ConnBlob() == "" {
+		t.Fatalf("server produced no ConnBlob after recovery")
+	}
+}
+
+// TestDoubleClose verifies that calling Close more than once on a
+// [Server] or [Client] is harmless and does not panic or error.
+func TestDoubleClose(t *testing.T) {
+	t.Parallel()
+
+	dm := integration.RunDERPAndSTUN(t, mkLogger(t, "derpstun"), "127.0.0.1")
+	reg := dm.Regions[1]
+	if reg == nil {
+		t.Fatal("no region 1 in derpmap")
+	}
+
+	s := &Server{Logf: mkLogger(t, "server"), Region: reg}
+	if err := s.Start(); err != nil {
+		t.Fatalf("server Start: %v", err)
+	}
+
+	c := &Client{Server: s.ConnBlob(), Logf: mkLogger(t, "client")}
+	PingForTest(t, s, c)
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("first client Close: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("second client Close: %v", err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("first server Close: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("second server Close: %v", err)
+	}
+}

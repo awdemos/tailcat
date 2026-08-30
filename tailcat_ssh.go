@@ -6,6 +6,7 @@
 package tailcat
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -169,35 +170,88 @@ func runWithPTY(sess ssh.Session, cmd *exec.Cmd, ptyReq ssh.Pty, winCh <-chan ss
 		sess.Exit(1)
 		return
 	}
-	tty.Close() // child owns the tty now
+	// Child owns its own fd to the slave; close the parent's copy now so
+	// the slave gets EOF once the child exits, and so we don't double-close
+	// it in the deferred cleanup.
+	tty.Close()
+	tty = nil
 
-	// Handle window size changes. The goroutine runs until gliderssh
-	// closes winCh, which happens only once the whole session channel
-	// shuts down, after this function has returned and closed ptmx. It
-	// therefore gets its own duplicated file descriptor rather than
-	// racing the deferred ptmx.Close (and whatever reuses that fd).
+	// Handle window size changes. We keep a duplicated fd to the pty
+	// master so the window goroutine can outlive this function without
+	// racing the deferred ptmx.Close. The goroutine is cancelled once the
+	// command exits so the duplicated fd is released and the pty master
+	// gets EOF, unblocking the stdout copy.
+	winchCtx, winchCancel := context.WithCancel(context.Background())
+	var winchWg sync.WaitGroup
 	if winchFd, err := unix.Dup(int(ptmx.Fd())); err == nil {
+		winchWg.Add(1)
 		go func() {
+			defer winchWg.Done()
 			defer unix.Close(winchFd)
-			for win := range winCh {
-				unix.IoctlSetWinsize(winchFd, syscall.TIOCSWINSZ, &unix.Winsize{
-					Row:    uint16(win.Height),
-					Col:    uint16(win.Width),
-					Xpixel: uint16(win.WidthPixels),
-					Ypixel: uint16(win.HeightPixels),
-				})
+			for {
+				select {
+				case win, ok := <-winCh:
+					if !ok {
+						return
+					}
+					unix.IoctlSetWinsize(winchFd, syscall.TIOCSWINSZ, &unix.Winsize{
+						Row:    uint16(win.Height),
+						Col:    uint16(win.Width),
+						Xpixel: uint16(win.WidthPixels),
+						Ypixel: uint16(win.HeightPixels),
+					})
+				case <-winchCtx.Done():
+					return
+				}
 			}
 		}()
 	}
+	defer func() {
+		winchCancel()
+		winchWg.Wait()
+	}()
 
 	// I/O: session ↔ pty master.
 	go func() {
 		io.Copy(ptmx, sess) // stdin
 	}()
-	io.Copy(sess, ptmx) // stdout (blocks until pty closes)
 
-	if err := cmd.Wait(); err != nil {
-		sess.Exit(exitCode(err))
+	// Wait for the command to finish or for the stdout copy to finish
+	// (e.g. the client disconnected). In the common case the command
+	// exits first; we then cancel the window goroutine so its duplicated
+	// pty-master fd is closed, allowing the stdout copy to drain EOF and
+	// return. If the client goes away first, kill the shell.
+	cmdDone := make(chan error, 1)
+	go func() {
+		cmdDone <- cmd.Wait()
+	}()
+
+	stdoutDone := make(chan struct{})
+	go func() {
+		defer close(stdoutDone)
+		io.Copy(sess, ptmx) // stdout
+	}()
+
+	var waitErr error
+	select {
+	case waitErr = <-cmdDone:
+		// Command exited. Release the window goroutine's fd so the
+		// stdout copy gets EOF and returns.
+		winchCancel()
+		winchWg.Wait()
+		<-stdoutDone
+	case <-stdoutDone:
+		// Client/session went away before the command exited.
+		winchCancel()
+		winchWg.Wait()
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		waitErr = <-cmdDone
+	}
+
+	if waitErr != nil {
+		sess.Exit(exitCode(waitErr))
 		return
 	}
 	sess.Exit(0)
