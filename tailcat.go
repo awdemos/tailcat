@@ -56,6 +56,8 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	go4mem "go4.org/mem"
 	"go4.org/netipx"
+
+	"github.com/tailscale/tailcat/internal/wirecbor"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"tailscale.com/disco"
 	"tailscale.com/envknob"
@@ -704,7 +706,7 @@ func (ci *ConnInfo) ConnBlob() ConnBlob {
 		w.Region = append(w.Region, wr)
 	}
 
-	x, err := cbor.Marshal(w)
+	x, err := cborMarshalConnInfo(w)
 	if err != nil {
 		panic(err)
 	}
@@ -752,8 +754,8 @@ func parseWire(cb ConnBlob) (*wireConnInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("base64 decode: %w", err)
 	}
-	w := new(wireConnInfo)
-	if err := cbor.Unmarshal(x, w); err != nil {
+	w, err := cborUnmarshalConnInfo(x)
+	if err != nil {
 		return nil, fmt.Errorf("CBOR unmarshal: %v", err)
 	}
 	return w, nil
@@ -803,6 +805,97 @@ func ParseConnBlob(cb ConnBlob) (ConnInfo, error) {
 		}
 	}
 	return ci, nil
+}
+
+func cborMarshalConnInfo(w *wireConnInfo) ([]byte, error) {
+	if wirecbor.Available() {
+		bw := wireConnInfoToBridge(w)
+		return wirecbor.Encode(bw)
+	}
+	return cbor.Marshal(w)
+}
+
+func cborUnmarshalConnInfo(x []byte) (*wireConnInfo, error) {
+	if wirecbor.Available() {
+		bw, err := wirecbor.Decode(x)
+		if err != nil {
+			return nil, err
+		}
+		return bridgeToWireConnInfo(bw), nil
+	}
+	w := new(wireConnInfo)
+	if err := cbor.Unmarshal(x, w); err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+func wireConnInfoToBridge(w *wireConnInfo) *wirecbor.WireConnInfo {
+	bw := &wirecbor.WireConnInfo{
+		ServerPublic: serverPublicBytes(w.ServerPublic),
+		RegionID:     w.RegionID,
+	}
+	for _, r := range w.Region {
+		br := &wirecbor.WireRegion{
+			RegionID:   r.RegionID,
+			RegionCode: r.RegionCode,
+			RegionName: r.RegionName,
+		}
+		for _, n := range r.Nodes {
+			br.Nodes = append(br.Nodes, &wirecbor.WireNode{
+				Name:             n.Name,
+				RegionID:         n.RegionID,
+				HostName:         n.HostName,
+				CertName:         n.CertName,
+				IPv4:             n.IPv4,
+				IPv6:             n.IPv6,
+				STUNPort:         n.STUNPort,
+				DERPPort:         n.DERPPort,
+				InsecureForTests: n.InsecureForTests,
+			})
+		}
+		bw.Region = append(bw.Region, br)
+	}
+	return bw
+}
+
+func bridgeToWireConnInfo(bw *wirecbor.WireConnInfo) *wireConnInfo {
+	w := &wireConnInfo{
+		ServerPublic: nodePublicFromBytes(bw.ServerPublic),
+		RegionID:     bw.RegionID,
+	}
+	for _, br := range bw.Region {
+		wr := &wireRegion{
+			RegionID:   br.RegionID,
+			RegionCode: br.RegionCode,
+			RegionName: br.RegionName,
+		}
+		for _, bn := range br.Nodes {
+			wr.Nodes = append(wr.Nodes, &wireNode{
+				Name:             bn.Name,
+				RegionID:         bn.RegionID,
+				HostName:         bn.HostName,
+				CertName:         bn.CertName,
+				IPv4:             bn.IPv4,
+				IPv6:             bn.IPv6,
+				STUNPort:         bn.STUNPort,
+				DERPPort:         bn.DERPPort,
+				InsecureForTests: bn.InsecureForTests,
+			})
+		}
+		w.Region = append(w.Region, wr)
+	}
+	return w
+}
+
+func serverPublicBytes(p NodePublic) [32]byte {
+	var b [32]byte
+	copy(b[:], p.AppendTo(nil))
+	return b
+}
+
+func nodePublicFromBytes(b [32]byte) NodePublic {
+	return NodePublic{key.NodePublicFromRaw32(go4mem.B(b[:]))}
 }
 
 // FetchDERPMap fetches and decodes the JSON DERP map. The opts may

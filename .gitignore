@@ -5,3 +5,14 @@
 # Go test artifacts.
 *.test
 *.out
+
+# Generated artifacts.
+/sbom/
+/dist/
+*.wasm
+
+# Rust build artifacts.
+/internal/wirecbor/target/
+
+# Session metadata.
+/.omo/
