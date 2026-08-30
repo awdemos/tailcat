@@ -152,7 +152,7 @@ List or delete saved keys:
 
 Generate SBOMs for the project using syft and write Go build info:
 
-	tailcat sbom [target] [outdir]
+	tailcat sbom [-cache=DIR] [-force] [target] [outdir]
 
 Print the full documentation (the project README) with more examples:
 
@@ -217,7 +217,7 @@ func main() {
 	case "printpub":
 		fmt.Println(clientKey().Public().String())
 	case "sbom":
-		runSBOM()
+		runSBOM(args[1:])
 	default:
 		var dst string
 		if len(args) == 2 {
