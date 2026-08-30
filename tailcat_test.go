@@ -443,3 +443,43 @@ func TestDoubleClose(t *testing.T) {
 		t.Fatalf("second server Close: %v", err)
 	}
 }
+
+// TestNetNSDisabledOnce is a regression test for the fix that makes
+// netns.SetEnabled(false) idempotent across multiple Server/Client
+// lifetimes. Previously, creating a second engine would panic because
+// netns.SetEnabled(false) failed when called more than once per process.
+func TestNetNSDisabledOnce(t *testing.T) {
+	t.Parallel()
+
+	dm := integration.RunDERPAndSTUN(t, mkLogger(t, "derpstun"), "127.0.0.1")
+	reg := dm.Regions[1]
+	if reg == nil {
+		t.Fatal("no region 1 in derpmap")
+	}
+
+	s1 := &Server{Logf: mkLogger(t, "server1"), Region: reg}
+	if err := s1.Start(); err != nil {
+		t.Fatalf("first server Start: %v", err)
+	}
+	c1 := &Client{Server: s1.ConnBlob(), Logf: mkLogger(t, "client1")}
+	PingForTest(t, s1, c1)
+	if err := c1.Close(); err != nil {
+		t.Fatalf("first client Close: %v", err)
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatalf("first server Close: %v", err)
+	}
+
+	s2 := &Server{Logf: mkLogger(t, "server2"), Region: reg}
+	if err := s2.Start(); err != nil {
+		t.Fatalf("second server Start: %v", err)
+	}
+	c2 := &Client{Server: s2.ConnBlob(), Logf: mkLogger(t, "client2")}
+	PingForTest(t, s2, c2)
+	if err := c2.Close(); err != nil {
+		t.Fatalf("second client Close: %v", err)
+	}
+	if err := s2.Close(); err != nil {
+		t.Fatalf("second server Close: %v", err)
+	}
+}
