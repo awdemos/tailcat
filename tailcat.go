@@ -128,6 +128,11 @@ const derpMapCacheMaxAge = time.Hour
 // hint header to the DERP map server.
 var ExpandForServer expandForServer
 
+// startBackendHook is used by tests to simulate a backend startup
+// failure after Server.Start has allocated resources but before it
+// calls lb.Start. It is always nil in production.
+var startBackendHook func(*locoBackend) error
+
 type expandForServer struct{}
 
 // ConnBlob is a compact, URL-safe string that a server gives to clients so
@@ -482,6 +487,16 @@ func (s *Server) Start() (err error) {
 	}
 
 	sys.Tun.Get().Start()
+
+	// Test hook: simulate a backend startup failure after resources are
+	// allocated but before lb.Start runs.
+	if startBackendHook != nil {
+		if hookErr := startBackendHook(lb); hookErr != nil {
+			err = hookErr
+			s.lb = nil
+			return fmt.Errorf("startBackendHook: %w", err)
+		}
+	}
 
 	s.lb = lb
 	defer func() {

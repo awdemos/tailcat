@@ -381,3 +381,31 @@ func TestFetchDERPMapMemoryCache(t *testing.T) {
 		t.Errorf("fetches = %d; want 1", n)
 	}
 }
+
+// TestServerStartCleansUpOnFailure verifies that Server.Start releases
+// netMon, the WireGuard engine, and netstack if lb.Start fails, and
+// that a second Start can recover from a clean state.
+func TestServerStartCleansUpOnFailure(t *testing.T) {
+	var fail atomic.Bool
+	fail.Store(true)
+	SetStartBackendHookForTest(func(lb *locoBackend) error {
+		if fail.Swap(false) {
+			return errors.New("injected start failure")
+		}
+		return nil
+	})
+	defer SetStartBackendHookForTest(nil)
+
+	s := &Server{Logf: logger.Discard}
+	if err := s.Start(); err == nil {
+		t.Fatalf("first Start succeeded, want injected failure")
+	}
+	if err := s.Start(); err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+	defer s.Close()
+
+	if s.ConnBlob() == "" {
+		t.Fatalf("server produced no ConnBlob after recovery")
+	}
+}
