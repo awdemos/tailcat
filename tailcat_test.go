@@ -386,6 +386,8 @@ func TestFetchDERPMapMemoryCache(t *testing.T) {
 // netMon, the WireGuard engine, and netstack if lb.Start fails, and
 // that a second Start can recover from a clean state.
 func TestServerStartCleansUpOnFailure(t *testing.T) {
+	dm := integration.RunDERPAndSTUN(t, mkLogger(t, "derpstun"), "127.0.0.1")
+
 	var fail atomic.Bool
 	fail.Store(true)
 	SetStartBackendHookForTest(func(lb *locoBackend) error {
@@ -396,7 +398,7 @@ func TestServerStartCleansUpOnFailure(t *testing.T) {
 	})
 	defer SetStartBackendHookForTest(nil)
 
-	s := &Server{Logf: logger.Discard}
+	s := &Server{Logf: logger.Discard, Region: dm.Regions[1]}
 	if err := s.Start(); err == nil {
 		t.Fatalf("first Start succeeded, want injected failure")
 	}
