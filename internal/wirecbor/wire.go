@@ -11,9 +11,9 @@ package wirecbor
 // the root package's wireConnInfo so that the Rust fast path and the pure-Go
 // fallback produce identical CBOR bytes.
 type WireConnInfo struct {
-	ServerPublic [32]byte       `cbor:"p" json:"ServerPublic"`
-	Region       []*WireRegion  `cbor:"r,omitempty" json:"Region,omitempty"`
-	RegionID     int            `cbor:"i,omitempty" json:"RegionID,omitempty"`
+	ServerPublic [32]byte      `cbor:"p" json:"ServerPublic"`
+	Region       []*WireRegion `cbor:"r,omitempty" json:"Region,omitempty"`
+	RegionID     int           `cbor:"i,omitempty" json:"RegionID,omitempty"`
 }
 
 // WireRegion is the wire form of a DERP region embedded in a ConnBlob.
@@ -26,13 +26,13 @@ type WireRegion struct {
 
 // WireNode is the wire form of a DERP node embedded in a ConnBlob.
 type WireNode struct {
-	Name     string `cbor:"n,omitempty" json:"Name,omitempty"`
-	RegionID int    `cbor:"i,omitempty" json:"RegionID,omitempty"`
-	HostName string `cbor:"h,omitempty" json:"HostName,omitempty"`
-	CertName string `cbor:"t,omitempty" json:"CertName,omitempty"`
-	IPv4     string `cbor:"4,omitempty" json:"IPv4,omitempty"`
-	IPv6     string `cbor:"6,omitempty" json:"IPv6,omitempty"`
-	STUNPort int    `cbor:"s,omitempty" json:"STUNPort,omitempty"`
-	DERPPort int    `cbor:"d,omitempty" json:"DERPPort,omitempty"`
-	InsecureForTests bool `cbor:"x,omitempty" json:"InsecureForTests,omitempty"`
+	Name             string `cbor:"n,omitempty" json:"Name,omitempty"`
+	RegionID         int    `cbor:"i,omitempty" json:"RegionID,omitempty"`
+	HostName         string `cbor:"h,omitempty" json:"HostName,omitempty"`
+	CertName         string `cbor:"t,omitempty" json:"CertName,omitempty"`
+	IPv4             string `cbor:"4,omitempty" json:"IPv4,omitempty"`
+	IPv6             string `cbor:"6,omitempty" json:"IPv6,omitempty"`
+	STUNPort         int    `cbor:"s,omitempty" json:"STUNPort,omitempty"`
+	DERPPort         int    `cbor:"d,omitempty" json:"DERPPort,omitempty"`
+	InsecureForTests bool   `cbor:"x,omitempty" json:"InsecureForTests,omitempty"`
 }
